@@ -1,0 +1,177 @@
+
+apiVersion: v1
+kind: Template
+metadata:
+  name: launchpad-builder
+  annotations:
+    description: This template creates a Build Configuration using an S2I builder.
+    tags: instant-app
+parameters:
+  - name: SUFFIX_NAME
+    description: The suffix name for the template objects
+    displayName: Suffix name
+  - name: SOURCE_REPOSITORY_URL
+    description: The source URL for the application
+    displayName: Source URL
+    required: true
+  - name: SOURCE_REPOSITORY_REF
+    description: The branch name for the application
+    displayName: Source Branch
+    value: master
+    required: true
+  - name: SOURCE_REPOSITORY_DIR
+    description: The location within the source repo of the application
+    displayName: Source Directory
+    value: .
+    required: true
+  - name: GITHUB_WEBHOOK_SECRET
+    description: A secret string used to configure the GitHub webhook.
+    displayName: GitHub Webhook Secret
+    required: true
+    from: '[a-zA-Z0-9]{40}'
+    generate: expression
+  - name: RELEASE_VERSION
+    description: The release verison/tag for the template objects
+    displayName: Release version
+objects:
+  - apiVersion: v1
+    kind: ImageStream
+    metadata:
+      name: golang-foo${SUFFIX_NAME}
+    spec: {}
+  - apiVersion: v1
+    kind: ImageStream
+    metadata:
+      name: runtime-go${SUFFIX_NAME}
+    spec:
+      tags:
+        - name: latest
+          from:
+            kind: DockerImage
+            name: 'centos/go-toolset-7-centos7:latest'
+  - apiVersion: v1
+    kind: BuildConfig
+    metadata:
+      name: golang-foo${SUFFIX_NAME}
+    spec:
+      output:
+        to:
+          kind: ImageStreamTag
+          name: 'golang-foo${SUFFIX_NAME}:${RELEASE_VERSION}'
+      postCommit: {}
+      resources: {}
+      source:
+        git:
+          uri: '${SOURCE_REPOSITORY_URL}'
+          ref: '${SOURCE_REPOSITORY_REF}'
+        type: Git
+      strategy:
+        type: Source
+        sourceStrategy:
+          from:
+            kind: ImageStreamTag
+            name: 'runtime-go${SUFFIX_NAME}:latest'
+          incremental: true
+      triggers:
+        - github:
+            secret: '${GITHUB_WEBHOOK_SECRET}'
+          type: GitHub
+        - type: ConfigChange
+        - imageChange: {}
+          type: ImageChange
+    status:
+      lastVersion: 0
+  - apiVersion: v1
+    kind: Service
+    spec:
+      ports:
+        - protocol: TCP
+          port: 8080
+          targetPort: 8080
+      type: ClusterIP
+      selector:
+        project: golang-foo
+        provider: nodeshift
+    metadata:
+      name: golang-foo${SUFFIX_NAME}
+      labels:
+        provider: nodeshift
+        expose: 'true'
+        project: golang-foo
+        version: 2.0.0
+  - apiVersion: v1
+    kind: DeploymentConfig
+    metadata:
+      name: golang-foo${SUFFIX_NAME}
+      labels:
+        app: golang-foo
+        provider: nodeshift
+        project: golang-foo
+        version: 2.0.0
+    spec:
+      template:
+        spec:
+          containers:
+            - readinessProbe:
+                httpGet:
+                  path: /api/status
+                  port: 8080
+                  scheme: HTTP
+                failureThreshold: 3
+                initialDelaySeconds: 10
+                periodSeconds: 5
+                successThreshold: 1
+                timeoutSeconds: 1
+              livenessProbe:
+                httpGet:
+                  path: /api/status
+                  port: 8080
+                  scheme: HTTP
+                failureThreshold: 2
+                initialDelaySeconds: 60
+                periodSeconds: 3
+                successThreshold: 1
+                timeoutSeconds: 1
+              image: golang-foo${SUFFIX_NAME}
+              name: golang-foo${SUFFIX_NAME}
+              securityContext:
+                privileged: false
+              ports:
+                - containerPort: 8080
+                  name: http
+                  protocol: TCP
+        metadata:
+          labels:
+            app: golang-foo
+            project: golang-foo
+            provider: nodeshift
+            version: 2.0.0
+      replicas: 1
+      selector:
+        app: golang-foo
+        project: golang-foo
+        provider: nodeshift
+      triggers:
+        - type: ConfigChange
+        - type: ImageChange
+          imageChangeParams:
+            automatic: true
+            containerNames:
+              - golang-foo${SUFFIX_NAME}
+            from:
+              kind: ImageStreamTag
+              name: 'golang-foo${SUFFIX_NAME}:${RELEASE_VERSION}'
+  - apiVersion: v1
+    kind: Route
+    metadata:
+      labels:
+        project: golang-foo
+        provider: nodeshift
+        version: 2.0.0
+      name: golang-foo${SUFFIX_NAME}
+    spec:
+      port:
+        targetPort: 8080
+      to:
+        kind: Service
+        name: golang-foo${SUFFIX_NAME}
